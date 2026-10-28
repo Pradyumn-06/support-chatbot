@@ -123,7 +123,10 @@ async function authenticate(path) {
 
 $("authform").addEventListener("submit", (e) => { e.preventDefault(); authenticate("/login"); });
 $("signup").addEventListener("click", () => authenticate("/register"));
-$("logout").addEventListener("click", logout);
+$("logout").addEventListener("click", async () => {
+  try { await api("/logout", "POST"); } catch (e) {}
+  logout();
+});
 $("newchat").addEventListener("click", greet);
 
 $("sendform").addEventListener("submit", async (e) => {
