@@ -2,3 +2,11 @@ fastapi
 uvicorn[standard]
 psycopg[binary]
 httpx
+flask
+flask-sqlalchemy
+flask-login
+flask-limiter
+psycopg2-binary
+gunicorn
+sentry-sdk[flask]
+anthropic
