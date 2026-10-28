@@ -9,16 +9,18 @@ from pydantic import BaseModel
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # ---- Free AI provider: Groq if GROQ_API_KEY is set, else OpenRouter ----
+# The app tries the models in order until one works.
 if os.environ.get("GROQ_API_KEY"):
     LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
     LLM_KEY = os.environ["GROQ_API_KEY"]
-    LLM_MODEL = "llama-3.3-70b-versatile"
+    LLM_MODELS = ["llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
 elif os.environ.get("OPENROUTER_API_KEY"):
     LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
     LLM_KEY = os.environ["OPENROUTER_API_KEY"]
-    LLM_MODEL = "openrouter/free"
+    LLM_MODELS = ["openrouter/free"]
 else:
-    LLM_URL = LLM_KEY = LLM_MODEL = None
+    LLM_URL = LLM_KEY = None
+    LLM_MODELS = []
 
 SYSTEM_PROMPT = (
     "You are a friendly customer support assistant. Answer clearly and briefly. "
@@ -105,18 +107,27 @@ def chat(req: ChatRequest):
         + [m.model_dump() for m in req.history]
         + [{"role": "user", "content": req.message}]
     )
-    try:
-        r = httpx.post(
-            LLM_URL,
-            headers={"Authorization": f"Bearer {LLM_KEY}"},
-            json={"model": LLM_MODEL, "messages": messages},
-            timeout=60,
-        )
-    except httpx.HTTPError as e:
-        raise HTTPException(502, f"Could not reach the AI service: {e}")
-    if r.status_code != 200:
-        raise HTTPException(502, f"AI service error: {r.text[:300]}")
-    return {"reply": r.json()["choices"][0]["message"]["content"]}
+
+    last_error = ""
+    for model in LLM_MODELS:
+        try:
+            r = httpx.post(
+                LLM_URL,
+                headers={"Authorization": f"Bearer {LLM_KEY}"},
+                json={"model": model, "messages": messages},
+                timeout=60,
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Could not reach the AI service: {e}")
+        if r.status_code == 200:
+            reply = r.json()["choices"][0]["message"]["content"]
+            return {"reply": reply, "model": model}
+        last_error = r.text[:300]
+        if "model" not in last_error.lower():
+            break  # not a model problem, so trying another model won't help
+
+    raise HTTPException(502, f"AI service error: {last_error}")
+
 
 @app.get("/chat-test")
 def chat_test(message: str = "Hello"):
