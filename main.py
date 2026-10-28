@@ -1,10 +1,30 @@
 import os
 from contextlib import asynccontextmanager
 
+import httpx
 import psycopg
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# ---- Free AI provider: Groq if GROQ_API_KEY is set, else OpenRouter ----
+if os.environ.get("GROQ_API_KEY"):
+    LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
+    LLM_KEY = os.environ["GROQ_API_KEY"]
+    LLM_MODEL = "llama-3.3-70b-versatile"
+elif os.environ.get("OPENROUTER_API_KEY"):
+    LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
+    LLM_KEY = os.environ["OPENROUTER_API_KEY"]
+    LLM_MODEL = "openrouter/free"
+else:
+    LLM_URL = LLM_KEY = LLM_MODEL = None
+
+SYSTEM_PROMPT = (
+    "You are a friendly customer support assistant. Answer clearly and briefly. "
+    "Use the earlier messages for context. If you don't know something, say so "
+    "and offer to connect the customer with a human agent."
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -34,7 +54,6 @@ def get_conn():
 
 @asynccontextmanager
 async def lifespan(app):
-    # Runs once when the app starts: create the tables if they don't exist
     if DATABASE_URL:
         with get_conn() as conn:
             conn.execute(SCHEMA)
@@ -42,6 +61,16 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+class Msg(BaseModel):
+    role: str
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[Msg] = []
 
 
 @app.get("/")
@@ -64,3 +93,27 @@ def db_check():
             "WHERE table_schema = 'public' ORDER BY table_name"
         ).fetchall()
     return {"database": "connected", "tables": [r[0] for r in rows]}
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    if not LLM_KEY:
+        raise HTTPException(500, "No API key set. Add GROQ_API_KEY or OPENROUTER_API_KEY.")
+
+    messages = (
+        [{"role": "system", "content": SYSTEM_PROMPT}]
+        + [m.model_dump() for m in req.history]
+        + [{"role": "user", "content": req.message}]
+    )
+    try:
+        r = httpx.post(
+            LLM_URL,
+            headers={"Authorization": f"Bearer {LLM_KEY}"},
+            json={"model": LLM_MODEL, "messages": messages},
+            timeout=60,
+        )
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Could not reach the AI service: {e}")
+    if r.status_code != 200:
+        raise HTTPException(502, f"AI service error: {r.text[:300]}")
+    return {"reply": r.json()["choices"][0]["message"]["content"]}
