@@ -7,69 +7,145 @@
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; height: 100vh; display: flex; justify-content: center; }
-  #app { width: 100%; max-width: 640px; height: 100%; display: flex; flex-direction: column; background: #fff; }
-  header { padding: 14px 16px; background: #2563eb; color: #fff; font-weight: 600; }
+  #app { width: 100%; max-width: 640px; height: 100%; background: #fff; display: flex; flex-direction: column; }
+  header { padding: 14px 16px; background: #2563eb; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  header span { flex: 1; }
+  header button { padding: 6px 10px; font-size: 13px; background: rgba(255,255,255,.2); }
+  #auth { flex: 1; flex-direction: column; justify-content: center; padding: 24px; gap: 10px; display: flex; }
+  #auth h2 { margin: 0 0 6px; }
+  #chat { flex: 1; flex-direction: column; min-height: 0; display: none; }
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.4; white-space: pre-wrap; }
   .user { align-self: flex-end; background: #2563eb; color: #fff; }
   .bot { align-self: flex-start; background: #e5e7eb; color: #111; }
-  form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; }
+  form { display: flex; gap: 8px; }
+  #sendform { padding: 12px; border-top: 1px solid #e5e7eb; }
   input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; font-size: 16px; }
-  button { padding: 0 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 16px; cursor: pointer; }
+  button { padding: 12px 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 16px; cursor: pointer; }
+  button.secondary { background: #e5e7eb; color: #111; }
   button:disabled { opacity: .5; }
+  #err { color: #b91c1c; min-height: 1.2em; font-size: 14px; }
 </style>
 </head>
 <body>
 <div id="app">
-  <header>Customer Support</header>
-  <div id="log"></div>
-  <form id="form">
-    <input id="input" placeholder="Type your question..." autocomplete="off" required>
-    <button id="send">Send</button>
-  </form>
+  <header>
+    <span>Customer Support</span>
+    <button id="newchat" class="secondary" style="display:none">New chat</button>
+    <button id="logout" class="secondary" style="display:none">Log out</button>
+  </header>
+
+  <div id="auth">
+    <h2>Log in or sign up</h2>
+    <form id="authform" style="flex-direction:column">
+      <input id="email" type="email" placeholder="Email" autocomplete="email" required>
+      <input id="password" type="password" placeholder="Password (6+ characters)" autocomplete="current-password" required>
+      <button type="submit">Log in</button>
+      <button type="button" id="signup" class="secondary">Sign up</button>
+    </form>
+    <div id="err"></div>
+  </div>
+
+  <div id="chat">
+    <div id="log"></div>
+    <form id="sendform">
+      <input id="input" placeholder="Type your question..." autocomplete="off" required>
+      <button id="send">Send</button>
+    </form>
+  </div>
 </div>
+
 <script>
-const log = document.getElementById("log");
-const form = document.getElementById("form");
-const input = document.getElementById("input");
-const send = document.getElementById("send");
-let history = [];
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem("token");
+let convId = null;
+
+function show() {
+  $("auth").style.display = token ? "none" : "flex";
+  $("chat").style.display = token ? "flex" : "none";
+  $("newchat").style.display = token ? "" : "none";
+  $("logout").style.display = token ? "" : "none";
+}
 
 function add(text, who) {
   const d = document.createElement("div");
   d.className = "msg " + who;
   d.textContent = text;
-  log.appendChild(d);
-  log.scrollTop = log.scrollHeight;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
   return d;
 }
 
-add("Hi! How can I help you today?", "bot");
+function logout() {
+  token = null;
+  localStorage.removeItem("token");
+  show();
+}
 
-form.addEventListener("submit", async (e) => {
+async function api(path, method, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && token) logout();
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong");
+  return data;
+}
+
+function greet() {
+  $("log").innerHTML = "";
+  convId = null;
+  add("Hi! How can I help you today?", "bot");
+}
+
+async function startChat() {
+  show();
+  greet();
+  try {
+    const h = await api("/history", "GET");
+    convId = h.conversation_id;
+    h.messages.forEach((m) => add(m.content, m.role === "user" ? "user" : "bot"));
+  } catch (e) {}
+}
+
+async function authenticate(path) {
+  $("err").textContent = "";
+  try {
+    const data = await api(path, "POST", { email: $("email").value, password: $("password").value });
+    token = data.token;
+    localStorage.setItem("token", token);
+    $("password").value = "";
+    await startChat();
+  } catch (e) {
+    $("err").textContent = e.message;
+  }
+}
+
+$("authform").addEventListener("submit", (e) => { e.preventDefault(); authenticate("/login"); });
+$("signup").addEventListener("click", () => authenticate("/register"));
+$("logout").addEventListener("click", logout);
+$("newchat").addEventListener("click", greet);
+
+$("sendform").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const text = input.value.trim();
+  const text = $("input").value.trim();
   if (!text) return;
-  input.value = "";
+  $("input").value = "";
   add(text, "user");
   const wait = add("Thinking...", "bot");
-  send.disabled = true;
+  $("send").disabled = true;
   try {
-    const res = await fetch("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, history: history.slice(-10) })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Something went wrong");
+    const data = await api("/chat", "POST", { message: text, conversation_id: convId });
+    convId = data.conversation_id;
     wait.textContent = data.reply;
-    history.push({ role: "user", content: text }, { role: "assistant", content: data.reply });
   } catch (err) {
-    wait.textContent = "Sorry, something went wrong. Please try again.";
+    wait.textContent = "Sorry: " + err.message;
   }
-  send.disabled = false;
-  input.focus();
+  $("send").disabled = false;
+  $("input").focus();
 });
+
+if (token) startChat(); else show();
 </script>
 </body>
 </html>
