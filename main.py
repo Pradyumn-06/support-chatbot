@@ -226,6 +226,55 @@ def logout(authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
+# ---------------- Past chats list ----------------
+@app.get("/conversations")
+def list_conversations(user_id: int = Depends(current_user)):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.id, c.created_at, "
+            "(SELECT content FROM messages m WHERE m.conversation_id = c.id "
+            " AND m.role = 'user' ORDER BY m.id LIMIT 1) "
+            "FROM conversations c "
+            "WHERE c.user_id = %s "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id) "
+            "ORDER BY c.id DESC LIMIT 50",
+            (user_id,),
+        ).fetchall()
+    return [
+        {"id": r[0], "created_at": r[1].isoformat(), "title": (r[2] or "New chat")[:40]}
+        for r in rows
+    ]
+
+
+@app.get("/conversations/{conv_id}")
+def get_conversation(conv_id: int, user_id: int = Depends(current_user)):
+    with get_conn() as conn:
+        owner = conn.execute(
+            "SELECT id FROM conversations WHERE id = %s AND user_id = %s",
+            (conv_id, user_id),
+        ).fetchone()
+        if not owner:
+            raise HTTPException(404, "Conversation not found.")
+        rows = conn.execute(
+            "SELECT role, content FROM messages WHERE conversation_id = %s ORDER BY id",
+            (conv_id,),
+        ).fetchall()
+    return {
+        "conversation_id": conv_id,
+        "messages": [{"role": role, "content": content} for role, content in rows],
+    }
+
+
+@app.delete("/conversations/{conv_id}")
+def delete_conversation(conv_id: int, user_id: int = Depends(current_user)):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM conversations WHERE id = %s AND user_id = %s",
+            (conv_id, user_id),
+        )
+    return {"ok": True}
+
+
 # ---------------- Chat with saved history ----------------
 @app.post("/chat")
 def chat(req: ChatRequest, user_id: int = Depends(current_user)):
