@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 import psycopg
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -77,7 +78,7 @@ class ChatRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return {"message": "Support chatbot is live"}
+    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
 
 
 @app.get("/health")
