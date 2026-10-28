@@ -1,135 +1,151 @@
-import os
-from contextlib import asynccontextmanager
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support Chat</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; height: 100vh; display: flex; justify-content: center; }
+  #app { width: 100%; max-width: 640px; height: 100%; background: #fff; display: flex; flex-direction: column; }
+  header { padding: 14px 16px; background: #2563eb; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  header span { flex: 1; }
+  header button { padding: 6px 10px; font-size: 13px; background: rgba(255,255,255,.2); }
+  #auth { flex: 1; flex-direction: column; justify-content: center; padding: 24px; gap: 10px; display: flex; }
+  #auth h2 { margin: 0 0 6px; }
+  #chat { flex: 1; flex-direction: column; min-height: 0; display: none; }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; line-height: 1.4; white-space: pre-wrap; }
+  .user { align-self: flex-end; background: #2563eb; color: #fff; }
+  .bot { align-self: flex-start; background: #e5e7eb; color: #111; }
+  form { display: flex; gap: 8px; }
+  #sendform { padding: 12px; border-top: 1px solid #e5e7eb; }
+  input { flex: 1; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; font-size: 16px; }
+  button { padding: 12px 18px; border: 0; border-radius: 10px; background: #2563eb; color: #fff; font-size: 16px; cursor: pointer; }
+  button.secondary { background: #e5e7eb; color: #111; }
+  button:disabled { opacity: .5; }
+  #err { color: #b91c1c; min-height: 1.2em; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span>Customer Support</span>
+    <button id="newchat" class="secondary" style="display:none">New chat</button>
+    <button id="logout" class="secondary" style="display:none">Log out</button>
+  </header>
 
-import httpx
-import psycopg
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+  <div id="auth">
+    <h2>Log in or sign up</h2>
+    <form id="authform" style="flex-direction:column">
+      <input id="email" type="email" placeholder="Email" autocomplete="email" required>
+      <input id="password" type="password" placeholder="Password (6+ characters)" autocomplete="current-password" required>
+      <button type="submit">Log in</button>
+      <button type="button" id="signup" class="secondary">Sign up</button>
+    </form>
+    <div id="err"></div>
+  </div>
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+  <div id="chat">
+    <div id="log"></div>
+    <form id="sendform">
+      <input id="input" placeholder="Type your question..." autocomplete="off" required>
+      <button id="send">Send</button>
+    </form>
+  </div>
+</div>
 
-# ---- Free AI provider: Groq if GROQ_API_KEY is set, else OpenRouter ----
-# The app tries the models in order until one works.
-if os.environ.get("GROQ_API_KEY"):
-    LLM_URL = "https://api.groq.com/openai/v1/chat/completions"
-    LLM_KEY = os.environ["GROQ_API_KEY"]
-    LLM_MODELS = ["llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b"]
-elif os.environ.get("OPENROUTER_API_KEY"):
-    LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-    LLM_KEY = os.environ["OPENROUTER_API_KEY"]
-    LLM_MODELS = ["openrouter/free"]
-else:
-    LLM_URL = LLM_KEY = None
-    LLM_MODELS = []
+<script>
+const $ = (id) => document.getElementById(id);
+let token = localStorage.getItem("token");
+let convId = null;
 
-SYSTEM_PROMPT = (
-    "You are a friendly customer support assistant. Answer clearly and briefly. "
-    "Use the earlier messages for context. If you don't know something, say so "
-    "and offer to connect the customer with a human agent."
-)
+function show() {
+  $("auth").style.display = token ? "none" : "flex";
+  $("chat").style.display = token ? "flex" : "none";
+  $("newchat").style.display = token ? "" : "none";
+  $("logout").style.display = token ? "" : "none";
+}
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS conversations (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
+function add(text, who) {
+  const d = document.createElement("div");
+  d.className = "msg " + who;
+  d.textContent = text;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+  return d;
+}
 
+function logout() {
+  token = null;
+  localStorage.removeItem("token");
+  show();
+}
 
-def get_conn():
-    return psycopg.connect(DATABASE_URL)
+async function api(path, method, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = "Bearer " + token;
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && token) logout();
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong");
+  return data;
+}
 
+function greet() {
+  $("log").innerHTML = "";
+  convId = null;
+  add("Hi! How can I help you today?", "bot");
+}
 
-@asynccontextmanager
-async def lifespan(app):
-    if DATABASE_URL:
-        with get_conn() as conn:
-            conn.execute(SCHEMA)
-    yield
+async function startChat() {
+  show();
+  greet();
+  try {
+    const h = await api("/history", "GET");
+    convId = h.conversation_id;
+    h.messages.forEach((m) => add(m.content, m.role === "user" ? "user" : "bot"));
+  } catch (e) {}
+}
 
+async function authenticate(path) {
+  $("err").textContent = "";
+  try {
+    const data = await api(path, "POST", { email: $("email").value, password: $("password").value });
+    token = data.token;
+    localStorage.setItem("token", token);
+    $("password").value = "";
+    await startChat();
+  } catch (e) {
+    $("err").textContent = e.message;
+  }
+}
 
-app = FastAPI(lifespan=lifespan)
+$("authform").addEventListener("submit", (e) => { e.preventDefault(); authenticate("/login"); });
+$("signup").addEventListener("click", () => authenticate("/register"));
+$("logout").addEventListener("click", logout);
+$("newchat").addEventListener("click", greet);
 
+$("sendform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("input").value.trim();
+  if (!text) return;
+  $("input").value = "";
+  add(text, "user");
+  const wait = add("Thinking...", "bot");
+  $("send").disabled = true;
+  try {
+    const data = await api("/chat", "POST", { message: text, conversation_id: convId });
+    convId = data.conversation_id;
+    wait.textContent = data.reply;
+  } catch (err) {
+    wait.textContent = "Sorry: " + err.message;
+  }
+  $("send").disabled = false;
+  $("input").focus();
+});
 
-class Msg(BaseModel):
-    role: str
-    content: str
-
-
-class ChatRequest(BaseModel):
-    message: str
-    history: list[Msg] = []
-
-
-@app.get("/")
-def home():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "index.html"))
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.get("/db-check")
-def db_check():
-    if not DATABASE_URL:
-        return {"database": "DATABASE_URL is not set"}
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' ORDER BY table_name"
-        ).fetchall()
-    return {"database": "connected", "tables": [r[0] for r in rows]}
-
-
-@app.post("/chat")
-def chat(req: ChatRequest):
-    if not LLM_KEY:
-        raise HTTPException(500, "No API key set. Add GROQ_API_KEY or OPENROUTER_API_KEY.")
-
-    messages = (
-        [{"role": "system", "content": SYSTEM_PROMPT}]
-        + [m.model_dump() for m in req.history]
-        + [{"role": "user", "content": req.message}]
-    )
-
-    last_error = ""
-    for model in LLM_MODELS:
-        try:
-            r = httpx.post(
-                LLM_URL,
-                headers={"Authorization": f"Bearer {LLM_KEY}"},
-                json={"model": model, "messages": messages},
-                timeout=60,
-            )
-        except httpx.HTTPError as e:
-            raise HTTPException(502, f"Could not reach the AI service: {e}")
-        if r.status_code == 200:
-            reply = r.json()["choices"][0]["message"]["content"]
-            return {"reply": reply, "model": model}
-        last_error = r.text[:300]
-        if "model" not in last_error.lower():
-            break  # not a model problem, so trying another model won't help
-
-    raise HTTPException(502, f"AI service error: {last_error}")
-
-
-@app.get("/chat-test")
-def chat_test(message: str = "Hello"):
-    return chat(ChatRequest(message=message))
+if (token) startChat(); else show();
+</script>
+</body>
+</html>
