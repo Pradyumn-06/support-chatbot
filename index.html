@@ -7,10 +7,10 @@
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; height: 100vh; display: flex; justify-content: center; }
-  #app { width: 100%; max-width: 640px; height: 100%; background: #fff; display: flex; flex-direction: column; }
+  #app { width: 100%; max-width: 640px; height: 100%; background: #fff; display: flex; flex-direction: column; position: relative; }
   header { padding: 14px 16px; background: #2563eb; color: #fff; font-weight: 600; display: flex; align-items: center; gap: 8px; }
   header span { flex: 1; }
-  header button { padding: 6px 10px; font-size: 13px; background: rgba(255,255,255,.2); }
+  header button { padding: 6px 10px; font-size: 13px; background: rgba(255,255,255,.2); color: #fff; }
   #auth { flex: 1; flex-direction: column; justify-content: center; padding: 24px; gap: 10px; display: flex; }
   #auth h2 { margin: 0 0 6px; }
   #chat { flex: 1; flex-direction: column; min-height: 0; display: none; }
@@ -25,15 +25,33 @@
   button.secondary { background: #e5e7eb; color: #111; }
   button:disabled { opacity: .5; }
   #err { color: #b91c1c; min-height: 1.2em; font-size: 14px; }
+
+  #history { display: none; position: absolute; top: 52px; left: 0; bottom: 0; width: 100%; max-width: 300px;
+             background: #fff; border-right: 1px solid #e5e7eb; box-shadow: 2px 0 8px rgba(0,0,0,.1);
+             overflow-y: auto; z-index: 5; }
+  #history h3 { margin: 0; padding: 14px 16px 8px; font-size: 15px; }
+  #histlist { padding-bottom: 12px; }
+  .item { display: flex; align-items: center; gap: 6px; padding: 10px 16px; cursor: pointer; border-bottom: 1px solid #f3f4f6; }
+  .item:hover { background: #f3f4f6; }
+  .item.active { background: #dbeafe; }
+  .item .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .item .del { padding: 2px 8px; font-size: 16px; border-radius: 6px; }
+  .empty { padding: 10px 16px; color: #6b7280; font-size: 14px; }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
+    <button id="histbtn" style="display:none">History</button>
     <span>Customer Support</span>
-    <button id="newchat" class="secondary" style="display:none">New chat</button>
-    <button id="logout" class="secondary" style="display:none">Log out</button>
+    <button id="newchat" style="display:none">New chat</button>
+    <button id="logout" style="display:none">Log out</button>
   </header>
+
+  <div id="history">
+    <h3>Past chats</h3>
+    <div id="histlist"></div>
+  </div>
 
   <div id="auth">
     <h2>Log in or sign up</h2>
@@ -63,8 +81,8 @@ let convId = null;
 function show() {
   $("auth").style.display = token ? "none" : "flex";
   $("chat").style.display = token ? "flex" : "none";
-  $("newchat").style.display = token ? "" : "none";
-  $("logout").style.display = token ? "" : "none";
+  for (const id of ["histbtn", "newchat", "logout"]) $(id).style.display = token ? "" : "none";
+  if (!token) $("history").style.display = "none";
 }
 
 function add(text, who) {
@@ -98,16 +116,75 @@ function greet() {
   add("Hi! How can I help you today?", "bot");
 }
 
+function showMessages(messages) {
+  $("log").innerHTML = "";
+  messages.forEach((m) => add(m.content, m.role === "user" ? "user" : "bot"));
+}
+
 async function startChat() {
   show();
   greet();
   try {
     const h = await api("/history", "GET");
     convId = h.conversation_id;
-    h.messages.forEach((m) => add(m.content, m.role === "user" ? "user" : "bot"));
+    if (h.messages.length) showMessages(h.messages);
   } catch (e) {}
 }
 
+// ---------- Past chats panel ----------
+async function loadList() {
+  const list = await api("/conversations", "GET");
+  const box = $("histlist");
+  box.innerHTML = "";
+  if (!list.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "No past chats yet.";
+    box.appendChild(e);
+    return;
+  }
+  list.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "item" + (c.id === convId ? " active" : "");
+    const t = document.createElement("span");
+    t.className = "t";
+    t.textContent = c.title;
+    const d = document.createElement("button");
+    d.className = "del secondary";
+    d.textContent = "×";
+    d.title = "Delete this chat";
+    row.addEventListener("click", () => openConv(c.id));
+    d.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Delete this chat?")) return;
+      try {
+        await api("/conversations/" + c.id, "DELETE");
+        if (c.id === convId) greet();
+        await loadList();
+      } catch (err) {}
+    });
+    row.append(t, d);
+    box.appendChild(row);
+  });
+}
+
+async function openConv(id) {
+  try {
+    const h = await api("/conversations/" + id, "GET");
+    convId = h.conversation_id;
+    showMessages(h.messages);
+    $("history").style.display = "none";
+  } catch (e) {}
+}
+
+$("histbtn").addEventListener("click", async () => {
+  const p = $("history");
+  if (p.style.display === "block") { p.style.display = "none"; return; }
+  p.style.display = "block";
+  try { await loadList(); } catch (e) {}
+});
+
+// ---------- Login / chat ----------
 async function authenticate(path) {
   $("err").textContent = "";
   try {
@@ -127,7 +204,7 @@ $("logout").addEventListener("click", async () => {
   try { await api("/logout", "POST"); } catch (e) {}
   logout();
 });
-$("newchat").addEventListener("click", greet);
+$("newchat").addEventListener("click", () => { greet(); $("history").style.display = "none"; });
 
 $("sendform").addEventListener("submit", async (e) => {
   e.preventDefault();
