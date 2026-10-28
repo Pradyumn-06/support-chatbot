@@ -117,3 +117,7 @@ def chat(req: ChatRequest):
     if r.status_code != 200:
         raise HTTPException(502, f"AI service error: {r.text[:300]}")
     return {"reply": r.json()["choices"][0]["message"]["content"]}
+
+@app.get("/chat-test")
+def chat_test(message: str = "Hello"):
+    return chat(ChatRequest(message=message))
